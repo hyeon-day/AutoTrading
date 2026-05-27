@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AutoTrading - 자산 현황</title>
+
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@300;400;500;700;900&display=swap" rel="stylesheet">
+
+    <link rel="stylesheet" href="css/style.css">
+</head>
+<body class="h-screen flex flex-col overflow-hidden">
+    <header class="h-14 bg-slate-800 border-b border-slate-700 flex items-center px-6 shrink-0">
+        <button id="sidebarToggle" type="button" class="sidebar-toggle-button" aria-label="좌측 메뉴 접기" aria-expanded="true">
+            <i class="fa-solid fa-bars" aria-hidden="true"></i>
+        </button>
+        <a href="index.html" class="w-64 flex items-center space-x-2 shrink-0 hover:opacity-90 transition-opacity" aria-label="AutoTrading 홈으로 이동">
+            <div class="w-9 h-8 bg-emerald-500 rounded flex items-center justify-center text-slate-900 font-bold text-sm tracking-tight">AT</div>
+            <span class="font-bold text-xl tracking-tight text-white">AutoTrading <span class="text-xs text-emerald-400 ml-1 border border-emerald-400 px-1 py-0.5 rounded">BETA</span></span>
+        </a>
+
+        <div class="relative flex-1 max-w-sm mx-4">
+            <input id="searchBar" type="text" placeholder="종목명 또는 종목코드를 입력하세요"
+                class="w-full bg-slate-900 border border-slate-700 rounded-lg px-4 py-2 pr-10 text-sm text-white focus:outline-none focus:border-emerald-500">
+            <button id="searchClearButton" type="button" class="search-clear-button" aria-label="검색어 지우기" title="검색어 지우기">
+                <i class="fa-solid fa-xmark" aria-hidden="true"></i>
+            </button>
+
+            <div id="searchModal" class="search-modal">
+                <p class="text-xs text-slate-400 mb-2 font-bold">검색 결과</p>
+                <div id="searchResults" class="search-results">
+                    <div class="search-empty">종목명 또는 종목코드를 입력하세요.</div>
+                </div>
+                <div class="mb-4">
+                    <p class="text-xs text-slate-400 mb-2 font-bold">최근 검색</p>
+                    <div class="flex flex-wrap gap-2">
+                        <span class="px-3 py-1 bg-slate-700 rounded-full text-xs text-slate-300">KODEX 미국S&amp;P500</span>
+                        <span class="px-3 py-1 bg-slate-700 rounded-full text-xs text-slate-300">QQQ</span>
+                    </div>
+                </div>
+                <div class="mb-4">
+                    <p class="text-xs text-slate-400 mb-2 font-bold">인기 검색</p>
+                    <div class="space-y-1">
+                        <div class="flex justify-between text-sm text-slate-300"><span>1 삼성전자</span><span class="text-blue-500">-0.92%</span></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="flex items-center space-x-6 ml-auto">
+            <button id="profileBtn" type="button" class="login-trigger" aria-haspopup="dialog" aria-controls="authModal">
+                <i class="fa-solid fa-right-to-bracket" aria-hidden="true"></i>
+                <span>로그인</span>
+            </button>
+        </div>
+    </header>
+
+    <div class="app-content flex flex-1 overflow-hidden">
+        <aside id="appSidebar" class="app-sidebar w-16 md:w-64 bg-slate-800 border-r border-slate-700 flex flex-col justify-between shrink-0 transition-all duration-300">
+            <nav class="p-4 space-y-2">
+                <a href="trading.html" class="flex items-center space-x-3 text-slate-400 hover:text-white hover:bg-slate-700 p-3 rounded-lg transition-colors">
+                    <i class="fa-solid fa-chart-line text-lg w-6 text-center"></i>
+                    <span class="font-medium hidden md:block">트레이딩 대시보드</span>
+                </a>
+                <a href="strategy.html" class="flex items-center space-x-3 text-slate-400 hover:text-white hover:bg-slate-700 p-3 rounded-lg transition-colors">
+                    <i class="fa-solid fa-diagram-project text-lg w-6 text-center"></i>
+                    <span class="font-medium hidden md:block">전략 설정</span>
+                </a>
+                <a href="news.html" class="flex items-center space-x-3 text-slate-400 hover:text-white hover:bg-slate-700 p-3 rounded-lg transition-colors">
+                    <i class="fa-solid fa-newspaper text-lg w-6 text-center"></i>
+                    <span class="font-medium hidden md:block">뉴스</span>
+                </a>
+                <a href="asset.html" class="sidebar-nav-link flex items-center space-x-3 text-emerald-400 bg-slate-700/50 p-3 rounded-lg transition-colors" aria-current="page">
+                    <i class="fa-solid fa-wallet text-lg w-6 text-center"></i>
+                    <span class="font-medium hidden md:block">자산 현황</span>
+                </a>
+                <a href="#" class="flex items-center space-x-3 text-slate-400 hover:text-white hover:bg-slate-700 p-3 rounded-lg transition-colors">
+                    <i class="fa-solid fa-clock-rotate-left text-lg w-6 text-center"></i>
+                    <span class="font-medium hidden md:block">매매 이력</span>
+                </a>
+            </nav>
+            <div class="p-4">
+                <a href="#" class="flex items-center space-x-3 text-slate-400 hover:text-white p-3 transition-colors">
+                    <i class="fa-solid fa-gear text-lg w-6 text-center"></i>
+                    <span class="font-medium hidden md:block">시스템 설정</span>
+                </a>
+            </div>
+        </aside>
+
+        <main class="app-main asset-main flex-1 overflow-hidden">
+            <section class="asset-shell" aria-label="자산 현황">
+                <div class="asset-toolbar">
+                    <div>
+                        <h1>자산 현황</h1>
+                        <p id="assetUpdatedAt">계좌 보유종목을 불러오는 중...</p>
+                    </div>
+                    <button id="assetRefreshButton" class="asset-refresh-button" type="button" title="새로고침" aria-label="자산 현황 새로고침">
+                        <i class="fa-solid fa-rotate-right" aria-hidden="true"></i>
+                    </button>
+                </div>
+
+                <div class="asset-summary-grid" aria-label="계좌 요약">
+                    <article class="asset-summary-card">
+                        <span>평가금액</span>
+                        <strong id="assetTotalEvaluation">-</strong>
+                    </article>
+                    <article class="asset-summary-card">
+                        <span>매입금액</span>
+                        <strong id="assetTotalPurchase">-</strong>
+                    </article>
+                    <article class="asset-summary-card">
+                        <span>평가손익</span>
+                        <strong id="assetTotalProfit">-</strong>
+                    </article>
+                    <article class="asset-summary-card">
+                        <span>주문가능금액</span>
+                        <strong id="assetOrderableCash">-</strong>
+                    </article>
+                </div>
+
+                <div class="asset-content-grid">
+                    <section class="asset-panel asset-allocation-panel" aria-label="포트폴리오 비중">
+                        <div class="asset-panel-head">
+                            <h2>포트폴리오 비중</h2>
+                            <span id="assetHoldingCount">0종목</span>
+                        </div>
+                        <div id="assetAllocationList" class="asset-allocation-list"></div>
+                    </section>
+
+                    <section class="asset-panel asset-holdings-panel" aria-label="보유 종목">
+                        <div class="asset-panel-head">
+                            <div class="asset-position-tabs" role="tablist" aria-label="자산 목록 전환">
+                                <button id="assetHoldingsTab" class="asset-position-tab is-active" type="button" data-asset-list-tab="holdings">보유 종목</button>
+                                <button id="assetPendingTab" class="asset-position-tab" type="button" data-asset-list-tab="pending">미체결 종목</button>
+                            </div>
+                            <span>클릭하면 대시보드로 이동</span>
+                        </div>
+                        <div class="asset-holding-header" aria-hidden="true">
+                            <span>종목</span>
+                            <span>매입가</span>
+                            <span>보유수량</span>
+                            <span>현재가</span>
+                            <span>수수료/세금</span>
+                            <span>손익률</span>
+                        </div>
+                        <div id="assetHoldingList" class="asset-holding-list"></div>
+                    </section>
+                </div>
+
+                <div id="assetStatus" class="asset-status show">계좌 보유종목을 불러오는 중...</div>
+            </section>
+        </main>
+    </div>
+
+    <script type="module" src="js/authModal.js"></script>
+    <script type="module" src="js/asset.js"></script>
+</body>
+</html>

@@ -1,0 +1,8 @@
+{
+  "rewrites": [
+    {
+      "source": "/api/:path*",
+      "destination": "https://brain-remained-correction-lady.trycloudflare.com/api/:path*"
+    }
+  ]
+}
