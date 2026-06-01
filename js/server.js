@@ -142,7 +142,9 @@ const server = http.createServer(async (request, response) => {
     if (request.method === 'GET' && requestUrl.pathname === '/api/news') {
         try {
             const category = requestUrl.searchParams.get('category') || 'all';
-            const news = await getNewsByCategory(category);
+            const query = requestUrl.searchParams.get('q') || '';
+            const sort = requestUrl.searchParams.get('sort') || 'accuracy';
+            const news = await getNewsByCategory(category, query, sort);
             sendJson(response, 200, { news });
         } catch (error) {
             sendJson(response, error.statusCode || 500, { message: error.message });
@@ -153,7 +155,9 @@ const server = http.createServer(async (request, response) => {
     if (request.method === 'GET' && requestUrl.pathname === '/api/demo/news') {
         try {
             const category = requestUrl.searchParams.get('category') || 'all';
-            const news = await getNewsByCategory(category);
+            const query = requestUrl.searchParams.get('q') || '';
+            const sort = requestUrl.searchParams.get('sort') || 'accuracy';
+            const news = await getNewsByCategory(category, query, sort);
             sendJson(response, 200, { news });
         } catch (error) {
             sendJson(response, error.statusCode || 500, { message: error.message });

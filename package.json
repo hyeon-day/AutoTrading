@@ -2,7 +2,6 @@
   "name": "autotrading",
   "version": "1.0.0",
   "description": "AutoTrading - Automated Stock Trading Platform",
-  "type": "module",
   "main": "js/server.js",
   "scripts": {
     "start": "node js/server.js",

@@ -3,3 +3,6 @@ data/*.db-*
 *.log
 __pycache__/
 .env
+node_modules/
+package-lock.json
+
