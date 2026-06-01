@@ -5,7 +5,7 @@ const fs = require('fs');
 const path = require('path');
 const { ROOT_DIR } = require('./backend/config');
 const { getChartData } = require('./backend/charts');
-const { getDemoChartData } = require('./backend/demoChart');
+const { getDemoChartData, getDemoCredentials } = require('./backend/demoChart');
 const {
     createIndicatorStrategy,
     deleteIndicatorStrategy,
@@ -101,6 +101,10 @@ const server = http.createServer(async (request, response) => {
     const stockMatch = requestUrl.pathname.match(/^\/api\/stock\/(.+)$/);
     const chartMatch = requestUrl.pathname.match(/^\/api\/chart\/(.+)$/);
     const demoChartMatch = requestUrl.pathname.match(/^\/api\/chart\/demo\/(.+)$/);
+    const demoHomeMatch = requestUrl.pathname.match(/^\/api\/demo\/home-rankings$/);
+    const demoSearchMatch = requestUrl.pathname.match(/^\/api\/demo\/search$/);
+    const demoStockMatch = requestUrl.pathname.match(/^\/api\/demo\/stock\/(.+)$/);
+    const demoRealtimeMatch = requestUrl.pathname.match(/^\/api\/demo\/realtime\/(.+)$/);
     const realtimeMatch = requestUrl.pathname.match(/^\/api\/realtime\/(.+)$/);
     const strategyMatch = requestUrl.pathname.match(/^\/api\/indicator-strategies\/([^/]+)$/);
 
@@ -299,6 +303,56 @@ const server = http.createServer(async (request, response) => {
                 settled: requestUrl.searchParams.get('settled') === '1',
             });
             sendJson(response, 200, chart);
+        } catch (error) {
+            sendJson(response, error.statusCode || 500, { message: error.message });
+        }
+        return;
+    }
+
+    if (request.method === 'GET' && demoHomeMatch) {
+        try {
+            const type = requestUrl.searchParams.get('type') || 'realtime';
+            const limit = requestUrl.searchParams.get('limit') || '10';
+            const credentials = getDemoCredentials();
+            const ranking = await getHomeRanking(type, limit, credentials);
+            sendJson(response, 200, ranking);
+        } catch (error) {
+            sendJson(response, error.statusCode || 500, { message: error.message });
+        }
+        return;
+    }
+
+    if (request.method === 'GET' && demoSearchMatch) {
+        try {
+            const q = requestUrl.searchParams.get('q') || '';
+            const limit = requestUrl.searchParams.get('limit') || '10';
+            const credentials = getDemoCredentials();
+            const results = await searchStocks(q, Number(limit), credentials);
+            sendJson(response, 200, { results });
+        } catch (error) {
+            sendJson(response, error.statusCode || 500, { message: error.message });
+        }
+        return;
+    }
+
+    if (request.method === 'GET' && demoStockMatch) {
+        try {
+            const query = decodeURIComponent(demoStockMatch[1]);
+            const credentials = getDemoCredentials();
+            const code = await resolveStockCode(query, credentials);
+            const stock = await getStockInfo(code, credentials);
+            sendJson(response, 200, stock);
+        } catch (error) {
+            sendJson(response, error.statusCode || 500, { message: error.message });
+        }
+        return;
+    }
+
+    if (request.method === 'GET' && demoRealtimeMatch) {
+        try {
+            const query = decodeURIComponent(demoRealtimeMatch[1]);
+            const credentials = getDemoCredentials();
+            await subscribeRealtime(request, response, query, credentials);
         } catch (error) {
             sendJson(response, error.statusCode || 500, { message: error.message });
         }

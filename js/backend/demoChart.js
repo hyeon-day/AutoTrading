@@ -50,4 +50,5 @@ async function getDemoChartData(query, interval = '1', options = {}) {
 
 module.exports = {
     getDemoChartData,
+    getDemoCredentials,
 };

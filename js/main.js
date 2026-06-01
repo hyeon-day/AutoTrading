@@ -4,7 +4,7 @@ import {
     indicatorDefinitions,
     normalizeIndicatorValues,
 } from './indicators/registry.js';
-import { authFetch, createAuthenticatedEventSource } from './apiClient.js';
+import { authFetch, createAuthenticatedEventSource, getAccessToken } from './apiClient.js';
 
 document.addEventListener('DOMContentLoaded', () => {
     const mainWrap = document.querySelector('.main_m');
@@ -130,6 +130,45 @@ document.addEventListener('DOMContentLoaded', () => {
     const pendingOrdersList = document.getElementById('pendingOrdersList');
     const orderMessage = document.getElementById('orderMessage');
     const orderSubmitButton = document.getElementById('orderSubmitButton');
+
+    // Disable trading/strategy UI for guests
+    (async () => {
+        try {
+            const token = await getAccessToken();
+            const isGuest = !token;
+            if (!isGuest) return;
+
+            const profileBtn = document.getElementById('profileBtn');
+            const showLogin = () => profileBtn?.click();
+
+            // Disable order inputs and buttons
+            if (orderSubmitButton) {
+                orderSubmitButton.disabled = true;
+                orderSubmitButton.title = '로그인이 필요합니다.';
+                orderSubmitButton.addEventListener('click', (e) => { e.preventDefault(); showLogin(); });
+            }
+            document.querySelectorAll('[data-order-action], #orderForm input, #orderForm select, #orderForm button').forEach((el) => {
+                try { el.disabled = true; } catch {}
+                el.addEventListener('click', (ev) => { ev.preventDefault(); showLogin(); });
+            });
+
+            // Disable strategy UI controls if present
+            const savedStrategySelect = document.getElementById('savedStrategySelect');
+            const strategyNameInput = document.getElementById('strategyNameInput');
+            if (savedStrategySelect) {
+                savedStrategySelect.disabled = true;
+                savedStrategySelect.title = '로그인이 필요합니다.';
+                savedStrategySelect.addEventListener('click', showLogin);
+            }
+            if (strategyNameInput) {
+                strategyNameInput.disabled = true;
+                strategyNameInput.placeholder = '로그인 후 사용 가능합니다.';
+                strategyNameInput.addEventListener('focus', (e) => { e.target.blur(); showLogin(); });
+            }
+        } catch (error) {
+            // ignore
+        }
+    })();
 
     let currentStockCode = '';
     let refreshTimer = null;
