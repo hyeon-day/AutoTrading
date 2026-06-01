@@ -23,6 +23,7 @@ const { getHomeRanking } = require('./backend/rankings');
 const { getStockInfo, resolveStockCode, searchStocks } = require('./backend/stocks');
 const { subscribeRealtime } = require('./backend/realtime');
 const { getKiwoomCredentialsForRequest, saveUserApiCredentials } = require('./backend/userCredentials');
+const { getAllNews, getNewsByCategory } = require('./backend/news');
 
 const PORT = Number(process.env.PORT || 3000);
 
@@ -132,6 +133,28 @@ const server = http.createServer(async (request, response) => {
             const credentials = await getKiwoomCredentialsForRequest(request, requestUrl);
             const ranking = await getHomeRanking(type, limit, credentials);
             sendJson(response, 200, ranking);
+        } catch (error) {
+            sendJson(response, error.statusCode || 500, { message: error.message });
+        }
+        return;
+    }
+
+    if (request.method === 'GET' && requestUrl.pathname === '/api/news') {
+        try {
+            const category = requestUrl.searchParams.get('category') || 'all';
+            const news = await getNewsByCategory(category);
+            sendJson(response, 200, { news });
+        } catch (error) {
+            sendJson(response, error.statusCode || 500, { message: error.message });
+        }
+        return;
+    }
+
+    if (request.method === 'GET' && requestUrl.pathname === '/api/demo/news') {
+        try {
+            const category = requestUrl.searchParams.get('category') || 'all';
+            const news = await getNewsByCategory(category);
+            sendJson(response, 200, { news });
         } catch (error) {
             sendJson(response, error.statusCode || 500, { message: error.message });
         }

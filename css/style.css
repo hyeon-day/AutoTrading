@@ -2564,3 +2564,38 @@ input:-webkit-autofill:active {
     outline: 2px solid #34d399;
     outline-offset: 3px;
 }
+
+/* News Loading & Rendering Styles */
+.loading-indicator {
+    padding: 2rem;
+    text-align: center;
+    color: #94a3b8;
+    font-size: 0.95rem;
+}
+
+.loading-empty {
+    padding: 2rem;
+    text-align: center;
+    color: #64748b;
+    font-size: 0.9rem;
+}
+
+.loading-error {
+    padding: 2rem;
+    text-align: center;
+    color: #ef4444;
+    font-size: 0.9rem;
+    background-color: rgba(239, 68, 68, 0.1);
+    border-radius: 0.5rem;
+    border: 1px solid rgba(239, 68, 68, 0.3);
+}
+
+#newsRefreshButton.spinning {
+    animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+    from { transform: rotate(0deg); }
+    to { transform: rotate(360deg); }
+}
+

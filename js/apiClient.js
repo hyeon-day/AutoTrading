@@ -20,6 +20,8 @@ export async function authFetch(input, options = {}) {
             url = input.replace('/api/stock/', '/api/demo/stock/');
         } else if (input.startsWith('/api/realtime/')) {
             url = input.replace('/api/realtime/', '/api/demo/realtime/');
+        } else if (input.startsWith('/api/news')) {
+            url = input.replace('/api/news', '/api/demo/news');
         }
     }
 
