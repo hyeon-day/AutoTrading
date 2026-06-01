@@ -23,7 +23,7 @@ const { getHomeRanking } = require('./backend/rankings');
 const { getStockInfo, resolveStockCode, searchStocks } = require('./backend/stocks');
 const { subscribeRealtime } = require('./backend/realtime');
 const { getKiwoomCredentialsForRequest, saveUserApiCredentials } = require('./backend/userCredentials');
-const { getAllNews, getNewsByCategory } = require('./backend/news');
+const { getNewsByCategory } = require('./backend/news');
 
 const PORT = Number(process.env.PORT || 3000);
 

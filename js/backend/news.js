@@ -1,270 +1,216 @@
+// 뉴스 백엔드 — 네이버 뉴스 검색 Open API 기반
+// https://developers.naver.com/docs/serviceapi/search/news/news.md
+
+const https = require('https');
 const dotenv = require('dotenv');
-const xml2js = require('xml2js');
 
 dotenv.config();
 
-const DART_API_KEY = process.env.DART_API_KEY;
-const KAKAO_REST_API_KEY = process.env.KAKAO_REST_API_KEY;
+// ─── 설정 ─────────────────────────────────────────────────────────────────────
 
-// Cache structure: { lastUpdate, data }
-let newsCache = {
-    dart: { lastUpdate: 0, data: [] },
-    kakao: new Map(),
-    rss: { lastUpdate: 0, data: [] },
+const NAVER_CLIENT_ID     = process.env.NAVER_CLIENT_ID     || '';
+const NAVER_CLIENT_SECRET = process.env.NAVER_CLIENT_SECRET || '';
+
+const CACHE_TTL_MS = 5 * 60 * 1000; // 5분
+const MAX_RESULTS  = 50;             // 최대 반환 건수
+
+/** 카테고리 → 기본 검색 키워드 */
+const CATEGORY_QUERY = {
+    all:         '주식 증시',
+    market:      '코스피 코스닥 증시',
+    topic:       '주식',           // 검색어 미입력 시 fallback
+    disclosure:  '공시 상장 IR',
 };
 
-const CACHE_DURATION = 60 * 60 * 1000; // 1 hour in ms
-const RSS_FEEDS = {
-    mk_main: 'https://www.mk.co.kr/rss/30000001/',
-    mk_market: 'https://www.mk.co.kr/rss/40300001/',
-    mk_economy: 'https://www.mk.co.kr/rss/30100041/',
-};
+// ─── 캐시 (카테고리 + 쿼리 복합 키) ─────────────────────────────────────────
 
-function filterNewsByQuery(newsItems, query) {
-    if (!query) return newsItems;
-    const needle = String(query).toLowerCase();
-    return newsItems.filter(item =>
-        fuzzyMatch(item.title, needle) ||
-        fuzzyMatch(item.description, needle) ||
-        fuzzyMatch(item.source, needle)
-    );
+/** @type {Map<string, { ts: number, data: object[] }>} */
+const cache = new Map();
+
+function getCacheKey(category, query, sort) {
+    return `${category}::${query}::${sort}`;
 }
 
-async function getCachedKakaoNews(searchQuery = '주식 시장', sortType = 'accuracy') {
-    const key = `${String(searchQuery).trim()}|${sortType}`;
-    const now = Date.now();
-    const cached = newsCache.kakao.get(key);
-    if (cached && now - cached.lastUpdate < CACHE_DURATION) {
-        return cached.data;
+function getFromCache(key) {
+    const entry = cache.get(key);
+    if (!entry) return null;
+    if (Date.now() - entry.ts > CACHE_TTL_MS) {
+        cache.delete(key);
+        return null;
     }
-
-    const data = await fetchKakaoNews(searchQuery || '주식 시장', sortType);
-    newsCache.kakao.set(key, { lastUpdate: now, data });
-    if (newsCache.kakao.size > 20) {
-        const oldestKey = newsCache.kakao.keys().next().value;
-        newsCache.kakao.delete(oldestKey);
-    }
-    return data;
+    return entry.data;
 }
+
+function setToCache(key, data) {
+    cache.set(key, { ts: Date.now(), data });
+}
+
+// ─── 네이버 Open API 호출 ─────────────────────────────────────────────────────
 
 /**
- * DART API: 공시 뉴스 조회
- * 검색어(회사명)가 있으면 해당 회사의 공시, 없으면 최근 공시
+ * 네이버 뉴스 검색 Open API 호출
+ * @param {string} query      검색어
+ * @param {'sim'|'date'} sort 정렬 (sim=관련성, date=최신)
+ * @param {number} display    결과 수 (최대 100)
+ * @param {number} start      시작 위치 (1-based)
+ * @returns {Promise<object[]>}
  */
-async function fetchDartNews(searchQuery = '') {
-    try {
-        // DART API: 공시 목록 조회
-        // 기본 URL: https://opendart.fss.or.kr/api/list.json
-        const url = new URL('https://opendart.fss.or.kr/api/list.json');
-        url.searchParams.append('crtfc_key', DART_API_KEY);
-        url.searchParams.append('pageNo', '1');
-        url.searchParams.append('pageCount', '10'); // 최근 10개
-
-        const response = await fetch(url.toString());
-        const data = await response.json();
-
-        if (data.list && Array.isArray(data.list)) {
-            return data.list.map(item => ({
-                source: 'DART',
-                category: '공시',
-                title: item.report_nm || '공시',
-                link: `https://opendart.fss.or.kr/cgi-bin/browse.cgi?action=corpus&corp_code=${item.corp_code}&report_no=${item.report_no}`,
-                pubDate: item.report_nm_date || new Date().toISOString(),
-                description: item.corp_name || '',
-            }));
+function fetchNaverNewsApi(query, sort = 'sim', display = 30, start = 1) {
+    return new Promise((resolve) => {
+        if (!NAVER_CLIENT_ID || !NAVER_CLIENT_SECRET ||
+            NAVER_CLIENT_ID.includes('여기에') || NAVER_CLIENT_SECRET.includes('여기에')) {
+            console.warn('[news] 네이버 API 키가 설정되지 않았습니다. .env에 NAVER_CLIENT_ID / NAVER_CLIENT_SECRET 설정 필요.');
+            return resolve([]);
         }
-        return [];
-    } catch (error) {
-        console.error('DART API Error:', error.message);
-        return [];
-    }
-}
 
-/**
- * Kakao News Search API: 뉴스 검색
- */
-async function fetchKakaoNews(searchQuery = '주식 시장', sortType = 'accuracy') {
-    try {
-        const url = new URL('https://dapi.kakao.com/v2/search/web');
-        url.searchParams.append('query', searchQuery);
-        url.searchParams.append('size', '10');
-        url.searchParams.append('sort', sortType === 'recency' ? 'recency' : 'accuracy');
+        const params = new URLSearchParams({
+            query,
+            display: String(Math.min(display, 100)),
+            start:   String(start),
+            sort,
+        });
 
-        const response = await fetch(url.toString(), {
+        const options = {
+            hostname: 'openapi.naver.com',
+            path:     `/v1/search/news.json?${params}`,
+            method:   'GET',
             headers: {
-                'Authorization': `KakaoAK ${KAKAO_REST_API_KEY}`,
+                'X-Naver-Client-Id':     NAVER_CLIENT_ID,
+                'X-Naver-Client-Secret': NAVER_CLIENT_SECRET,
+                'Accept':                'application/json',
             },
+        };
+
+        const req = https.request(options, (res) => {
+            let raw = '';
+            res.setEncoding('utf8');
+            res.on('data', (chunk) => { raw += chunk; });
+            res.on('end', () => {
+                if (res.statusCode !== 200) {
+                    console.error(`[news] 네이버 API 오류 ${res.statusCode}: ${raw.slice(0, 200)}`);
+                    return resolve([]);
+                }
+                try {
+                    const json = JSON.parse(raw);
+                    resolve(normalizeItems(json.items || []));
+                } catch (err) {
+                    console.error('[news] 응답 파싱 오류:', err.message);
+                    resolve([]);
+                }
+            });
         });
 
-        const data = await response.json();
+        req.on('error', (err) => {
+            console.error('[news] HTTPS 요청 오류:', err.message);
+            resolve([]);
+        });
 
-        if (data.documents && Array.isArray(data.documents)) {
-            return data.documents
-                .filter(item => item.title.includes('뉴스') || item.url.includes('news'))
-                .slice(0, 10)
-                .map(item => ({
-                    source: 'Kakao',
-                    category: '뉴스',
-                    title: item.title.replace(/<[^>]*>/g, ''), // HTML 태그 제거
-                    link: item.url,
-                    pubDate: item.datetime || new Date().toISOString(),
-                    description: item.contents ? item.contents.replace(/<[^>]*>/g, '') : '',
-                }));
-        }
-        return [];
-    } catch (error) {
-        console.error('Kakao API Error:', error.message);
-        return [];
-    }
+        req.setTimeout(8000, () => {
+            req.destroy();
+            console.warn('[news] 네이버 API 타임아웃');
+            resolve([]);
+        });
+
+        req.end();
+    });
 }
 
-function fuzzyMatch(text, query) {
-    if (!query) return true;
-    const normalized = String(text || '').toLowerCase();
-    const needle = String(query).toLowerCase();
-    return normalized.includes(needle);
+// ─── 응답 정규화 ──────────────────────────────────────────────────────────────
+
+/** HTML 태그 및 엔티티 제거 */
+function stripHtml(str) {
+    return String(str || '')
+        .replace(/<[^>]*>/g, '')
+        .replace(/&amp;/g,  '&')
+        .replace(/&lt;/g,   '<')
+        .replace(/&gt;/g,   '>')
+        .replace(/&quot;/g, '"')
+        .replace(/&#39;/g,  "'")
+        .replace(/&apos;/g, "'")
+        .trim();
 }
 
 /**
- * RSS Feed Parser: 연합뉴스, 한국경제, 매일경제
+ * 네이버 API 응답 아이템 → 내부 표준 형식
+ * @param {object[]} items
+ * @returns {object[]}
  */
-async function fetchRssNews() {
+function normalizeItems(items) {
+    return items.map((item) => ({
+        title:       stripHtml(item.title),
+        link:        item.originallink || item.link || '',
+        description: stripHtml(item.description),
+        pubDate:     item.pubDate || new Date().toISOString(),
+        source:      extractSource(item.originallink || item.link || ''),
+    }));
+}
+
+/** URL에서 언론사명 추출 */
+function extractSource(url) {
     try {
-        const parser = new xml2js.Parser({
-            strict: false,
-            normalize: true,
-            normalizeTags: true,
-            trim: true,
-            explicitArray: false,
-        });
-        const allNews = [];
-
-        for (const [source, url] of Object.entries(RSS_FEEDS)) {
-            try {
-                const response = await fetch(url, {
-                    headers: {
-                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
-                        'Accept': 'application/rss+xml, application/xml, text/xml, */*;q=0.1',
-                    },
-                    redirect: 'follow',
-                });
-                if (!response.ok) {
-                    throw new Error(`HTTP ${response.status}`);
-                }
-                const xml = await response.text();
-                const result = await parser.parseStringPromise(xml);
-                let items = [];
-                if (result?.rss?.channel) {
-                    const channel = result.rss.channel;
-                    items = channel.item || [];
-                } else if (result?.feed?.entry) {
-                    items = result.feed.entry;
-                }
-                if (!Array.isArray(items)) {
-                    items = [items];
-                }
-                const sourceMap = {
-                    yonhap: '연합뉴스',
-                    hankyung: '한국경제',
-                    maeil: '매일경제',
-                    mk_main: '매일경제',
-                    mk_market: '매일경제',
-                    mk_economy: '매일경제',
-                };
-
-                items.forEach(item => {
-                    allNews.push({
-                        source: sourceMap[source],
-                        category: '경제',
-                        title: item.title || item['dc:title'] || '',
-                        link: item.link || (item.guid && item.guid._) || '',
-                        pubDate: item.pubDate || item.published || item['dc:date'] || new Date().toISOString(),
-                        description: item.description || item.summary || item['dc:description'] || '',
-                    });
-                });
-            } catch (err) {
-                console.warn(`RSS Feed Error (${source}):`, err.message);
-            }
-        }
-
-        return allNews.slice(0, 10); // 최대 10개
-    } catch (error) {
-        console.error('RSS Parser Error:', error.message);
-        return [];
+        const hostname = new URL(url).hostname.replace(/^www\./, '');
+        // 주요 언론사 매핑
+        const map = {
+            'news.naver.com':      '네이버뉴스',
+            'finance.naver.com':   '네이버금융',
+            'hankyung.com':        '한국경제',
+            'mk.co.kr':            '매일경제',
+            'edaily.co.kr':        '이데일리',
+            'etnews.com':          '전자신문',
+            'chosun.com':          '조선일보',
+            'joongang.co.kr':      '중앙일보',
+            'donga.com':           '동아일보',
+            'yna.co.kr':           '연합뉴스',
+            'newsis.com':          '뉴시스',
+            'yonhapnewstv.co.kr':  '연합뉴스TV',
+            'sedaily.com':         '서울경제',
+            'fnnews.com':          '파이낸셜뉴스',
+            'thebell.co.kr':       '더벨',
+            'inews24.com':         '아이뉴스24',
+            'biz.chosun.com':      '조선비즈',
+            'bloomberg.co.kr':     '블룸버그',
+            'reuters.com':         '로이터',
+        };
+        return map[hostname] || hostname.split('.').slice(-2, -1)[0] || '뉴스';
+    } catch {
+        return '뉴스';
     }
 }
 
-/**
- * 모든 뉴스 소스에서 뉴스 조회 (캐싱 적용)
- */
-async function getAllNews(searchQuery = '', sortType = 'accuracy') {
-    const now = Date.now();
-    const results = {
-        dart: [],
-        kakao: [],
-        rss: [],
-    };
-
-    // DART 뉴스 캐시 체크
-    if (now - newsCache.dart.lastUpdate > CACHE_DURATION) {
-        results.dart = await fetchDartNews(searchQuery);
-        newsCache.dart = { lastUpdate: now, data: results.dart };
-    } else {
-        results.dart = newsCache.dart.data;
-    }
-
-    // Kakao 뉴스 캐시 (검색어/정렬별 캐시)
-    results.kakao = await getCachedKakaoNews(searchQuery || '주식 시장', sortType);
-
-    // RSS 뉴스 캐시 체크
-    if (now - newsCache.rss.lastUpdate > CACHE_DURATION) {
-        results.rss = await fetchRssNews();
-        newsCache.rss = { lastUpdate: now, data: results.rss };
-    } else {
-        results.rss = newsCache.rss.data;
-    }
-
-    return results;
-}
+// ─── 공개 인터페이스 ──────────────────────────────────────────────────────────
 
 /**
- * 특정 탭별 뉴스 반환
+ * 카테고리 및 검색어로 뉴스 조회
+ *
+ * @param {'all'|'market'|'topic'|'disclosure'} category
+ * @param {string} searchQuery  사용자 검색어 (선택)
+ * @param {'accuracy'|'recency'} sortType
+ * @returns {Promise<object[]>}
  */
 async function getNewsByCategory(category = 'all', searchQuery = '', sortType = 'accuracy') {
-    const allNews = await getAllNews(searchQuery, sortType);
-    const query = String(searchQuery || '').trim();
+    const apiSort  = sortType === 'recency' ? 'date' : 'sim';
+    const query    = searchQuery.trim() || CATEGORY_QUERY[category] || CATEGORY_QUERY.all;
+    const cacheKey = getCacheKey(category, query, apiSort);
 
-    switch (category) {
-        case 'disclosure': // 공시
-            return query
-                ? filterNewsByQuery(allNews.dart, query)
-                : allNews.dart;
-        case 'market': // 시장 뉴스
-            return query
-                ? await getCachedKakaoNews(query, sortType)
-                : allNews.kakao;
-        case 'topic':
-            if (!query) {
-                return [];
-            }
-            return [
-                ...await getCachedKakaoNews(query, sortType),
-                ...filterNewsByQuery(allNews.rss, query),
-            ].sort((a, b) => new Date(b.pubDate) - new Date(a.pubDate));
-        case 'all':
-        default:
-            const combined = [
-                ...filterNewsByQuery(allNews.dart, query),
-                ...filterNewsByQuery(allNews.kakao, query),
-                ...filterNewsByQuery(allNews.rss, query),
-            ];
-            return sortType === 'recency'
-                ? combined.sort((a, b) => new Date(b.pubDate) - new Date(a.pubDate))
-                : combined;
+    // 캐시 HIT
+    const cached = getFromCache(cacheKey);
+    if (cached) {
+        return cached;
     }
+
+    // 네이버 API 호출 (display 30씩 2페이지 = 최대 60건)
+    const [page1, page2] = await Promise.all([
+        fetchNaverNewsApi(query, apiSort, 30, 1),
+        fetchNaverNewsApi(query, apiSort, 30, 31),
+    ]);
+
+    const news = [...page1, ...page2].slice(0, MAX_RESULTS);
+
+    if (news.length > 0) {
+        setToCache(cacheKey, news);
+    }
+
+    return news;
 }
 
-module.exports = {
-    getAllNews,
-    getNewsByCategory,
-};
+module.exports = { getNewsByCategory };
