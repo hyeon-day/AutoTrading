@@ -7,7 +7,13 @@ export async function authFetch(input, options = {}) {
         headers.set('Authorization', `Bearer ${accessToken}`);
     }
 
-    return fetch(input, {
+    let url = input;
+    // 비로그인 상태에서 차트 요청 시 데모 API 사용
+    if (!accessToken && typeof input === 'string' && input.includes('/api/chart/')) {
+        url = input.replace('/api/chart/', '/api/chart/demo/');
+    }
+
+    return fetch(url, {
         ...options,
         headers,
     });
@@ -22,3 +28,4 @@ export async function createAuthenticatedEventSource(url) {
 
     return new EventSource(sourceUrl.toString());
 }
+

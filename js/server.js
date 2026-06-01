@@ -5,6 +5,7 @@ const fs = require('fs');
 const path = require('path');
 const { ROOT_DIR } = require('./backend/config');
 const { getChartData } = require('./backend/charts');
+const { getDemoChartData } = require('./backend/demoChart');
 const {
     createIndicatorStrategy,
     deleteIndicatorStrategy,
@@ -99,6 +100,7 @@ const server = http.createServer(async (request, response) => {
     const requestUrl = new URL(request.url, `http://${request.headers.host}`);
     const stockMatch = requestUrl.pathname.match(/^\/api\/stock\/(.+)$/);
     const chartMatch = requestUrl.pathname.match(/^\/api\/chart\/(.+)$/);
+    const demoChartMatch = requestUrl.pathname.match(/^\/api\/chart\/demo\/(.+)$/);
     const realtimeMatch = requestUrl.pathname.match(/^\/api\/realtime\/(.+)$/);
     const strategyMatch = requestUrl.pathname.match(/^\/api\/indicator-strategies\/([^/]+)$/);
 
@@ -279,6 +281,24 @@ const server = http.createServer(async (request, response) => {
             const code = await resolveStockCode(query, credentials);
             const stock = await getStockInfo(code, credentials);
             sendJson(response, 200, stock);
+        } catch (error) {
+            sendJson(response, error.statusCode || 500, { message: error.message });
+        }
+        return;
+    }
+
+    if (request.method === 'GET' && demoChartMatch) {
+        try {
+            const query = decodeURIComponent(demoChartMatch[1]);
+            const interval = requestUrl.searchParams.get('interval') || '1';
+            const chart = await getDemoChartData(query, interval, {
+                years: requestUrl.searchParams.get('years'),
+                limit: requestUrl.searchParams.get('limit'),
+                startDate: requestUrl.searchParams.get('startDate'),
+                endDate: requestUrl.searchParams.get('endDate'),
+                settled: requestUrl.searchParams.get('settled') === '1',
+            });
+            sendJson(response, 200, chart);
         } catch (error) {
             sendJson(response, error.statusCode || 500, { message: error.message });
         }
