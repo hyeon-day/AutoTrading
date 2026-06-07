@@ -5,6 +5,7 @@ import {
     signOut,
     signUpWithProfile,
 } from './supabaseClient.js';
+import { KIWOOM_CREDENTIAL_GUIDE } from './apiClient.js';
 
 const TEXT = {
     login: '\uB85C\uADF8\uC778',
@@ -23,9 +24,11 @@ const TEXT = {
     kiwoomAppKey: '\uD0A4\uC6C0 API \uC571\uD0A4',
     kiwoomSecretKey: '\uD0A4\uC6C0 API \uC2DC\uD06C\uB9BF\uD0A4',
     telegramBotKey: '\uD154\uB808\uADF8\uB7A8 \uBD07 API \uD0A4',
+    telegramChatId: '\uD154\uB808\uADF8\uB7A8 Chat ID',
     appKeyPlaceholder: '\uC571\uD0A4\uB97C \uC785\uB825\uD558\uC138\uC694',
     secretKeyPlaceholder: '\uC2DC\uD06C\uB9BF\uD0A4\uB97C \uC785\uB825\uD558\uC138\uC694',
     botKeyPlaceholder: '\uBD07 \uD1A0\uD070\uC744 \uC785\uB825\uD558\uC138\uC694',
+    chatIdPlaceholder: 'Chat ID\uB97C \uC785\uB825\uD558\uC138\uC694',
     save: '\uC800\uC7A5',
 };
 
@@ -36,6 +39,10 @@ document.addEventListener('DOMContentLoaded', () => {
     if (!accountButton) return;
 
     let currentUser = null;
+    const shouldShowCredentialGuide = () => {
+        const path = window.location.pathname.split('/').pop() || 'index.html';
+        return path !== 'news.html';
+    };
 
     accountButton.className = 'login-trigger';
     accountButton.type = 'button';
@@ -149,6 +156,40 @@ document.addEventListener('DOMContentLoaded', () => {
             <i class="fa-solid fa-chevron-down account-menu-caret" aria-hidden="true"></i>
         `;
         accountButton.setAttribute('aria-haspopup', 'menu');
+    };
+
+    const removeCredentialGuide = () => {
+        document.getElementById('kiwoomCredentialGuide')?.remove();
+    };
+
+    const showCredentialGuide = () => {
+        if (!shouldShowCredentialGuide() || document.getElementById('kiwoomCredentialGuide')) return;
+        const guide = document.createElement('div');
+        guide.id = 'kiwoomCredentialGuide';
+        guide.className = 'credential-guide-banner';
+        guide.setAttribute('role', 'status');
+        guide.textContent = KIWOOM_CREDENTIAL_GUIDE;
+        document.body.prepend(guide);
+    };
+
+    const refreshCredentialGuide = async (user) => {
+        removeCredentialGuide();
+        if (!user || !shouldShowCredentialGuide()) return;
+
+        try {
+            const response = await fetch('/api/integration-status', {
+                cache: 'no-store',
+                headers: {
+                    Authorization: `Bearer ${await getAccessToken()}`,
+                },
+            });
+            const payload = await response.json().catch(() => ({}));
+            if (response.ok && !payload.kiwoomConfigured) {
+                showCredentialGuide();
+            }
+        } catch (error) {
+            console.warn('Kiwoom credential guide check failed.', error);
+        }
     };
 
     const openAuthModal = (panelName = 'login') => {
@@ -276,10 +317,19 @@ document.addEventListener('DOMContentLoaded', () => {
             kiwoomAppKey: String(formData.get('kiwoomAppKey') || '').trim(),
             kiwoomSecretKey: String(formData.get('kiwoomSecretKey') || '').trim(),
             telegramBotToken: String(formData.get('telegramBotToken') || '').trim(),
+            telegramChatId: String(formData.get('telegramChatId') || '').trim(),
         };
 
-        if (!payload.kiwoomAppKey || !payload.kiwoomSecretKey) {
-            setAuthMessage('\uD0A4\uC6C0 \uC571\uD0A4\uC640 \uC2DC\uD06C\uB9BF\uD0A4\uB294 \uBC18\uB4DC\uC2DC \uC785\uB825\uD574\uC8FC\uC138\uC694. \uD154\uB808\uADF8\uB7A8 \uBD07 API \uD0A4\uB294 \uC120\uD0DD\uC785\uB2C8\uB2E4.', 'error');
+        if (Boolean(payload.kiwoomAppKey) !== Boolean(payload.kiwoomSecretKey)) {
+            setAuthMessage('키움 앱키와 시크릿키는 함께 입력해주세요.', 'error');
+            return;
+        }
+        if (Boolean(payload.telegramBotToken) !== Boolean(payload.telegramChatId)) {
+            setAuthMessage('텔레그램 봇 API 키와 Chat ID는 함께 입력해주세요.', 'error');
+            return;
+        }
+        if (!payload.kiwoomAppKey && !payload.telegramBotToken) {
+            setAuthMessage('저장할 키 정보를 입력해주세요.', 'error');
             return;
         }
 
@@ -331,8 +381,14 @@ document.addEventListener('DOMContentLoaded', () => {
     });
 
     getCurrentUser()
-        .then(updateAccountButton)
-        .catch(() => updateAccountButton(null));
+        .then((user) => {
+            updateAccountButton(user);
+            refreshCredentialGuide(user);
+        })
+        .catch(() => {
+            updateAccountButton(null);
+            removeCredentialGuide();
+        });
 });
 
 function getAuthModalMarkup() {
@@ -391,6 +447,10 @@ function getAuthModalMarkup() {
                 <label class="auth-field">
                     <span>${TEXT.telegramBotKey}</span>
                     <input type="password" name="telegramBotToken" autocomplete="off" placeholder="${TEXT.botKeyPlaceholder}">
+                </label>
+                <label class="auth-field">
+                    <span>${TEXT.telegramChatId}</span>
+                    <input type="password" name="telegramChatId" autocomplete="off" placeholder="${TEXT.chatIdPlaceholder}">
                 </label>
                 <button type="submit" class="auth-submit-button" data-default-text="${TEXT.save}">${TEXT.save}</button>
             </form>

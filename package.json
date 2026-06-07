@@ -1,17 +1,12 @@
 {
-  "name": "autotrading",
-  "version": "1.0.0",
-  "description": "AutoTrading - Automated Stock Trading Platform",
-  "main": "js/server.js",
+  "name": "autotrade",
+  "version": "0.1.0",
+  "private": true,
   "scripts": {
     "start": "node js/server.js",
-    "dev": "node js/server.js"
+    "sync:kiwoom:15m": "node scripts/sync-kiwoom-15m.js"
   },
   "dependencies": {
-    "dotenv": "^16.0.3",
-    "xml2js": "^0.6.2"
-  },
-  "engines": {
-    "node": ">=18.0.0"
+    "pg": "^8.13.1"
   }
 }

@@ -1,7 +1,7 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 
-const SUPABASE_URL = 'https://wsdxtlfxccbgfjnjuzrw.supabase.co';
-const SUPABASE_PUBLISHABLE_KEY = 'sb_publishable_O8TGEVbLz99Q44Ru7nS6Mg_viXfewp6';
+const SUPABASE_URL = 'https://lwvrmqwgtyozdiotgfqp.supabase.co';
+const SUPABASE_PUBLISHABLE_KEY = 'sb_publishable_fTpAYKLqassiB-z5OItqqw_mYaoLQ1y';
 
 export const isSupabaseConfigured = Boolean(
     SUPABASE_URL
@@ -20,7 +20,7 @@ export const supabase = isSupabaseConfigured ? createClient(SUPABASE_URL, SUPABA
 
 function assertSupabaseConfigured() {
     if (!supabase) {
-        throw new Error('Supabase publishable key is not configured in js/supabaseClient.js.');
+        throw new Error('Supabase publishable key is not configured in js/frontend/supabaseClient.js.');
     }
 }
 

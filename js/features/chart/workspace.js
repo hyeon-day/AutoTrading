@@ -1,12 +1,23 @@
-﻿import { drawStockChart } from './chartRenderer.js';
+import { drawStockChart } from '../../frontend/chartRenderer.js';
 import {
     getIndicatorDefinition,
     indicatorDefinitions,
     normalizeIndicatorValues,
-} from './indicators/registry.js';
-import { authFetch, createAuthenticatedEventSource, getAccessToken } from './apiClient.js';
+} from '../../indicators/registry.js';
+import {
+    authFetch,
+    createAuthenticatedEventSource,
+    getClientSessionMode,
+} from '../../frontend/apiClient.js';
+import { formatNumber } from './format.js';
+import {
+    cloneIndicatorFromDefinition,
+    dedupeIndicatorsByKey,
+    normalizeStrategyName,
+} from '../strategies/strategyUtils.js';
+import { buildAutoTradeRulePayload } from '../autoTrade/rulePayload.js';
 
-document.addEventListener('DOMContentLoaded', () => {
+export function initChartWorkspace() {
     const mainWrap = document.querySelector('.main_m');
     const mainTop = document.querySelector('.main_a');
     const mainBottom = document.querySelector('.main_b');
@@ -122,61 +133,48 @@ document.addEventListener('DOMContentLoaded', () => {
     const orderPriceInput = document.getElementById('orderPriceInput');
     const orderQuantityInput = document.getElementById('orderQuantityInput');
     const orderTotalInput = document.getElementById('orderTotalInput');
+    const orderAvailableAmountRow = document.getElementById('orderAvailableAmountRow');
     const orderAvailableAmount = document.getElementById('orderAvailableAmount');
     const orderHoldingRow = document.getElementById('orderHoldingRow');
+    const orderHoldingAveragePrice = document.getElementById('orderHoldingAveragePrice');
     const orderHoldingPrice = document.getElementById('orderHoldingPrice');
     const orderHoldingQuantity = document.getElementById('orderHoldingQuantity');
+    const orderHoldingProfit = document.getElementById('orderHoldingProfit');
     const pendingOrdersPanel = document.getElementById('pendingOrdersPanel');
     const pendingOrdersList = document.getElementById('pendingOrdersList');
     const orderMessage = document.getElementById('orderMessage');
     const orderSubmitButton = document.getElementById('orderSubmitButton');
-
-    // Disable trading/strategy UI for guests
-    (async () => {
-        try {
-            const token = await getAccessToken();
-            const isGuest = !token;
-            if (!isGuest) return;
-
-            const profileBtn = document.getElementById('profileBtn');
-            const showLogin = () => profileBtn?.click();
-
-            // Disable order inputs and buttons
-            if (orderSubmitButton) {
-                orderSubmitButton.disabled = true;
-                orderSubmitButton.title = '로그인이 필요합니다.';
-                orderSubmitButton.addEventListener('click', (e) => { e.preventDefault(); showLogin(); });
-            }
-            document.querySelectorAll('[data-order-action], #orderForm input, #orderForm select, #orderForm button').forEach((el) => {
-                try { el.disabled = true; } catch {}
-                el.addEventListener('click', (ev) => { ev.preventDefault(); showLogin(); });
-            });
-
-            // Disable strategy UI controls if present
-            const savedStrategySelect = document.getElementById('savedStrategySelect');
-            const strategyNameInput = document.getElementById('strategyNameInput');
-            if (savedStrategySelect) {
-                savedStrategySelect.disabled = true;
-                savedStrategySelect.title = '로그인이 필요합니다.';
-                savedStrategySelect.addEventListener('click', showLogin);
-            }
-            if (strategyNameInput) {
-                strategyNameInput.disabled = true;
-                strategyNameInput.placeholder = '로그인 후 사용 가능합니다.';
-                strategyNameInput.addEventListener('focus', (e) => { e.target.blur(); showLogin(); });
-            }
-        } catch (error) {
-            // ignore
-        }
-    })();
+    const orderModeButtons = document.querySelectorAll('[data-order-mode]');
+    const orderModePanels = document.querySelectorAll('[data-order-mode-panel]');
+    const autoTradeForm = document.getElementById('autoTradeForm');
+    const autoTradeStrategySelect = document.getElementById('autoTradeStrategySelect');
+    const autoTradeCashInput = document.getElementById('autoTradeCashInput');
+    const autoTradeMaxPriceInput = document.getElementById('autoTradeMaxPriceInput');
+    const autoTradeMinPriceInput = document.getElementById('autoTradeMinPriceInput');
+    const autoTradeQuantityInput = document.getElementById('autoTradeQuantityInput');
+    const autoTradePriceRangeCheckbox = document.getElementById('autoTradePriceRangeCheckbox');
+    const autoTradeSignalGuardCheckbox = document.getElementById('autoTradeSignalGuardCheckbox');
+    const autoTradeTelegramStatus = document.getElementById('autoTradeTelegramStatus');
+    const autoTradeTelegramStatusText = document.getElementById('autoTradeTelegramStatusText');
+    const autoTradeTelegramVerifyButton = document.getElementById('autoTradeTelegramVerifyButton');
+    const autoTradeTelegramCodeRow = document.getElementById('autoTradeTelegramCodeRow');
+    const autoTradeTelegramCodeInput = document.getElementById('autoTradeTelegramCodeInput');
+    const autoTradeTelegramConfirmButton = document.getElementById('autoTradeTelegramConfirmButton');
+    const autoTradeSubmitButton = document.getElementById('autoTradeSubmitButton');
+    const autoTradeMessage = document.getElementById('autoTradeMessage');
+    const telegramHelpButton = document.getElementById('telegramHelpButton');
+    const telegramHelpModal = document.getElementById('telegramHelpModal');
+    const telegramHelpCloseButton = document.getElementById('telegramHelpCloseButton');
 
     let currentStockCode = '';
     let refreshTimer = null;
     let searchTimer = null;
     let latestResults = [];
     let activeSearchIndex = -1;
+    let activeIndicatorSearchIndex = -1;
     const SEARCH_DRAFT_STORAGE_KEY = 'autotrading.stockSearchDraft';
     const isStaticStrategyChart = document.body.dataset.chartMode === 'strategy';
+    const chartDataSource = document.body.dataset.chartSource || 'kiwoom';
     const DEFAULT_CHART_INTERVAL = document.body.dataset.defaultChartInterval || '15';
     const chartHistoryYears = Number(document.body.dataset.chartYears) || 0;
     const chartCandleLimit = Number(document.body.dataset.chartLimit) || 0;
@@ -206,41 +204,34 @@ document.addEventListener('DOMContentLoaded', () => {
     let activeIndicators = [];
     let savedIndicatorStrategies = [];
     let currentOrderAction = 'buy';
+    let currentOrderMode = 'manual';
     let currentOrderPriceMode = 'limit';
     let latestStockPrice = 0;
     let orderMessageTimer = null;
+    let autoTradeMessageTimer = null;
+    let isTelegramConfigured = false;
     let hasUserEditedOrderPrice = false;
     let orderableCashTimer = null;
     let pendingOrdersTimer = null;
     let latestSellableQuantity = 0;
     let holdingRequestId = 0;
+    let indicatorHelpModal = null;
+    let isGuestSession = true;
+    let isSessionModeResolved = false;
+    let sessionModePromise = null;
 
-    const formatNumber = (value) => {
-        if (value === null || value === undefined || Number.isNaN(Number(value))) {
-            return '-';
-        }
-        return Number(value).toLocaleString('ko-KR');
-    };
+    const GUEST_TRADING_MESSAGE = '로그인하지 않은 상태에서는 차트 조회와 보조지표 추가만 이용할 수 있습니다.';
+    const LOGIN_REQUIRED_MESSAGE = `${GUEST_TRADING_MESSAGE} 주문, 자동매매, 지표 저장은 로그인 후 이용해주세요.`;
 
-    const cloneIndicatorFromDefinition = (definition) => {
-        return {
-            id: `${definition.key}-${Date.now()}-${Math.random().toString(16).slice(2)}`,
-            key: definition.key,
-            values: Object.fromEntries(definition.fields.map((field) => [field.key, field.value])),
-        };
+    const isGuestTradingMode = () => isGuestSession && !isStaticStrategyChart;
+
+    const waitForSessionMode = async () => {
+        if (isSessionModeResolved || !sessionModePromise) return;
+        await sessionModePromise;
     };
 
     const isIndicatorActive = (key) => {
         return activeIndicators.some((indicator) => indicator.key === key);
-    };
-
-    const dedupeIndicatorsByKey = (indicators = []) => {
-        const seenKeys = new Set();
-        return indicators.filter((indicator) => {
-            if (!indicator?.key || seenKeys.has(indicator.key)) return false;
-            seenKeys.add(indicator.key);
-            return true;
-        });
     };
 
     const setRightPanel = (panelName = 'indicator') => {
@@ -262,7 +253,7 @@ document.addEventListener('DOMContentLoaded', () => {
             button.setAttribute('aria-selected', String(isActive));
         });
 
-        if (isOrderPanel) {
+        if (isOrderPanel && currentOrderAction === 'buy') {
             fetchOrderableCash();
         }
     };
@@ -442,6 +433,81 @@ document.addEventListener('DOMContentLoaded', () => {
         .replace(/"/g, '&quot;')
         .replace(/'/g, '&#39;');
 
+    const renderIndicatorHelpList = (items = []) => {
+        if (!Array.isArray(items) || !items.length) return '';
+        return `<ul>${items.map((item) => `<li>${escapeHtml(item)}</li>`).join('')}</ul>`;
+    };
+
+    const renderIndicatorHelpSection = (title, content) => {
+        if (!content || (Array.isArray(content) && !content.length)) return '';
+        const body = Array.isArray(content)
+            ? renderIndicatorHelpList(content)
+            : `<p>${escapeHtml(content)}</p>`;
+        return `
+            <section class="indicator-help-section">
+                <h3>${escapeHtml(title)}</h3>
+                ${body}
+            </section>
+        `;
+    };
+
+    const ensureIndicatorHelpModal = () => {
+        if (indicatorHelpModal) return indicatorHelpModal;
+        indicatorHelpModal = document.createElement('div');
+        indicatorHelpModal.id = 'indicatorHelpModal';
+        indicatorHelpModal.className = 'indicator-help-modal hidden';
+        indicatorHelpModal.setAttribute('role', 'dialog');
+        indicatorHelpModal.setAttribute('aria-modal', 'true');
+        indicatorHelpModal.setAttribute('aria-labelledby', 'indicatorHelpTitle');
+        indicatorHelpModal.innerHTML = `
+            <div class="indicator-help-card">
+                <div class="indicator-help-head">
+                    <h2 id="indicatorHelpTitle">보조지표 설명</h2>
+                    <button id="indicatorHelpCloseButton" type="button" aria-label="설명창 닫기">
+                        <i class="fa-solid fa-xmark" aria-hidden="true"></i>
+                    </button>
+                </div>
+                <div id="indicatorHelpBody" class="indicator-help-body"></div>
+            </div>
+        `;
+        document.body.appendChild(indicatorHelpModal);
+
+        indicatorHelpModal.addEventListener('click', (event) => {
+            if (event.target === indicatorHelpModal) {
+                closeIndicatorHelp();
+            }
+        });
+        indicatorHelpModal.querySelector('#indicatorHelpCloseButton')?.addEventListener('click', closeIndicatorHelp);
+        return indicatorHelpModal;
+    };
+
+    function closeIndicatorHelp() {
+        if (!indicatorHelpModal) return;
+        indicatorHelpModal.classList.add('hidden');
+    }
+
+    const openIndicatorHelp = (indicatorKey) => {
+        const definition = getIndicatorDefinition(indicatorKey);
+        if (!definition) return;
+        const modal = ensureIndicatorHelpModal();
+        const help = definition.help || {};
+        const title = help.title || definition.name || '보조지표';
+        const body = modal.querySelector('#indicatorHelpBody');
+        const titleElement = modal.querySelector('#indicatorHelpTitle');
+        if (titleElement) titleElement.textContent = title;
+        if (body) {
+            body.innerHTML = `
+                ${renderIndicatorHelpSection('개요', help.summary || definition.description)}
+                ${renderIndicatorHelpSection('입력값', help.parameters)}
+                ${renderIndicatorHelpSection('차트에서 보는 법', help.chart)}
+                ${renderIndicatorHelpSection('자동매매 해석', help.autoTrade)}
+                ${renderIndicatorHelpSection('주의할 점', help.caution)}
+            `;
+        }
+        modal.classList.remove('hidden');
+        modal.querySelector('#indicatorHelpCloseButton')?.focus();
+    };
+
     const getOrderPriceStepFor = (price) => {
         if (price < 2000) return 1;
         if (price < 5000) return 5;
@@ -455,6 +521,11 @@ document.addEventListener('DOMContentLoaded', () => {
     const getOrderPriceStep = () => {
         const price = parseOrderNumber(orderPriceInput?.value) || latestStockPrice || 0;
         return getOrderPriceStepFor(price);
+    };
+
+    const formatWon = (value) => {
+        const number = Number(value);
+        return Number.isFinite(number) ? `${formatNumber(number)}원` : '-';
     };
 
     const isRegularOrderTime = () => {
@@ -488,6 +559,88 @@ document.addEventListener('DOMContentLoaded', () => {
             }, options.autoHide);
         }
     };
+
+    const setAutoTradeMessage = (message = '', type = '', options = {}) => {
+        if (!autoTradeMessage) return;
+        if (autoTradeMessageTimer) {
+            clearTimeout(autoTradeMessageTimer);
+            autoTradeMessageTimer = null;
+        }
+        autoTradeMessage.textContent = message;
+        autoTradeMessage.classList.toggle('is-error', type === 'error');
+        autoTradeMessage.classList.toggle('is-success', type === 'success');
+        if (message && options.autoHide) {
+            autoTradeMessageTimer = setTimeout(() => {
+                setAutoTradeMessage('');
+            }, options.autoHide);
+        }
+    };
+
+    const setOrderMode = (mode = 'manual') => {
+        currentOrderMode = mode === 'auto' ? 'auto' : 'manual';
+        orderModeButtons.forEach((button) => {
+            button.classList.toggle('is-active', button.dataset.orderMode === currentOrderMode);
+        });
+        orderModePanels.forEach((panel) => {
+            panel.classList.toggle('hidden', panel.dataset.orderModePanel !== currentOrderMode);
+        });
+        if (currentOrderMode === 'auto') {
+            loadAutoTradePanel();
+        }
+    };
+
+    const updateAutoTradeSubmitState = () => {
+        if (!autoTradeSubmitButton) return;
+        if (isGuestTradingMode()) {
+            autoTradeSubmitButton.disabled = true;
+            return;
+        }
+        autoTradeSubmitButton.disabled = !autoTradePriceRangeCheckbox?.checked
+            || !autoTradeSignalGuardCheckbox?.checked;
+    };
+
+    const applyGuestTradingRestrictions = () => {
+        if (!isGuestTradingMode()) return;
+
+        if (orderSubmitButton) orderSubmitButton.disabled = true;
+        if (autoTradeSubmitButton) autoTradeSubmitButton.disabled = true;
+        if (indicatorSaveButton) indicatorSaveButton.disabled = true;
+        if (indicatorDeleteButton) indicatorDeleteButton.disabled = true;
+        if (strategyNameMessage) strategyNameMessage.textContent = GUEST_TRADING_MESSAGE;
+        setOrderMessage(LOGIN_REQUIRED_MESSAGE, 'error');
+        setAutoTradeMessage(LOGIN_REQUIRED_MESSAGE, 'error');
+    };
+
+    sessionModePromise = getClientSessionMode()
+        .then((mode) => {
+            isGuestSession = mode.isGuest;
+            isSessionModeResolved = true;
+            applyGuestTradingRestrictions();
+            updateOrderSubmitLabel();
+            updateAutoTradeSubmitState();
+            if (!isGuestTradingMode() && !orderPanel?.classList.contains('hidden')) {
+                if (currentOrderAction === 'buy') fetchOrderableCash();
+                if (currentOrderAction === 'sell') fetchStockHolding();
+            }
+        })
+        .catch((error) => {
+            console.warn('Session mode check failed.', error);
+            isGuestSession = true;
+            isSessionModeResolved = true;
+            applyGuestTradingRestrictions();
+        });
+
+    function openTelegramHelp() {
+        if (!telegramHelpModal) return;
+        telegramHelpModal.classList.remove('hidden');
+        telegramHelpCloseButton?.focus();
+    }
+
+    function closeTelegramHelp() {
+        if (!telegramHelpModal) return;
+        telegramHelpModal.classList.add('hidden');
+        telegramHelpButton?.focus();
+    }
 
     const renderPendingOrders = (orders = []) => {
         if (!pendingOrdersList) return;
@@ -536,6 +689,11 @@ document.addEventListener('DOMContentLoaded', () => {
 
     const fetchPendingOrders = async () => {
         if (!pendingOrdersList) return;
+        if (isGuestTradingMode()) {
+            pendingOrdersList.innerHTML = '<div class="pending-order-empty">로그인 후 미체결 주문을 조회할 수 있습니다.</div>';
+            setOrderMessage(LOGIN_REQUIRED_MESSAGE, 'error');
+            return;
+        }
         if (pendingOrdersTimer) {
             clearTimeout(pendingOrdersTimer);
             pendingOrdersTimer = null;
@@ -581,12 +739,28 @@ document.addEventListener('DOMContentLoaded', () => {
         orderAvailableAmount.classList.toggle('is-error', isError);
     };
 
-    const setHoldingSummary = ({ priceText = '', quantityText = '', isError = false } = {}) => {
+    const setHoldingSummary = ({
+        averagePriceText = '',
+        priceText = '',
+        quantityText = '',
+        profitText = '',
+        profitValue = 0,
+        isError = false,
+    } = {}) => {
+        if (orderHoldingAveragePrice) {
+            orderHoldingAveragePrice.value = averagePriceText;
+        }
         if (orderHoldingPrice) {
             orderHoldingPrice.value = priceText;
         }
         if (orderHoldingQuantity) {
             orderHoldingQuantity.value = quantityText;
+        }
+        if (orderHoldingProfit) {
+            orderHoldingProfit.value = profitText;
+            const numericProfit = Number(profitValue) || 0;
+            orderHoldingProfit.classList.toggle('is-up', numericProfit > 0);
+            orderHoldingProfit.classList.toggle('is-down', numericProfit < 0);
         }
         orderHoldingRow?.querySelector('.order-holding-summary')?.classList.toggle('is-error', isError);
     };
@@ -600,13 +774,24 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     };
 
-    const setSellableQuantity = ({ orderableQuantity = 0, holdingQuantity = 0, currentPrice = 0 } = {}) => {
+    const setSellableQuantity = ({
+        orderableQuantity = 0,
+        holdingQuantity = 0,
+        averagePrice = 0,
+        purchaseAmount = 0,
+        profitLoss = 0,
+    } = {}) => {
         latestSellableQuantity = Math.max(0, Number(orderableQuantity || holdingQuantity) || 0);
-        const displayPrice = Number(currentPrice) || latestStockPrice || 0;
         const displayQuantity = Number(holdingQuantity || orderableQuantity) || 0;
+        const displayAveragePrice = displayQuantity ? Number(averagePrice) || 0 : 0;
+        const displayPurchaseAmount = displayQuantity ? Number(purchaseAmount) || 0 : 0;
+        const displayProfitLoss = displayQuantity ? Number(profitLoss) || 0 : 0;
         setHoldingSummary({
-            priceText: displayPrice ? `${formatNumber(displayPrice)}원` : '-',
+            averagePriceText: formatWon(displayAveragePrice),
             quantityText: `${formatNumber(displayQuantity)}주`,
+            priceText: formatWon(displayPurchaseAmount),
+            profitText: formatWon(displayProfitLoss),
+            profitValue: displayProfitLoss,
         });
         clampSellQuantityInput();
     };
@@ -615,8 +800,10 @@ document.addEventListener('DOMContentLoaded', () => {
         holdingRequestId += 1;
         latestSellableQuantity = 0;
         setHoldingSummary({
+            averagePriceText: message,
             priceText: message,
             quantityText: message,
+            profitText: message,
             isError,
         });
     };
@@ -631,7 +818,12 @@ document.addEventListener('DOMContentLoaded', () => {
             return;
         }
 
-        setHoldingSummary({ priceText: '조회 중...', quantityText: '조회 중...' });
+        setHoldingSummary({
+            averagePriceText: '조회 중...',
+            priceText: '조회 중...',
+            quantityText: '조회 중...',
+            profitText: '조회 중...',
+        });
         try {
             const response = await authFetch(`/api/account/holding?code=${encodeURIComponent(currentStockCode)}`, { cache: 'no-store' });
             const payload = await response.json().catch(() => ({}));
@@ -641,7 +833,9 @@ document.addEventListener('DOMContentLoaded', () => {
             setSellableQuantity({
                 orderableQuantity: Number(payload.orderableQuantity ?? payload.quantity) || 0,
                 holdingQuantity: Number(payload.holdingQuantity ?? payload.quantity) || 0,
-                currentPrice: Number(payload.currentPrice) || 0,
+                averagePrice: Number(payload.averagePrice) || 0,
+                purchaseAmount: Number(payload.purchaseAmount) || 0,
+                profitLoss: Number(payload.profitLoss) || 0,
             });
         } catch (error) {
             if (requestId !== holdingRequestId) return;
@@ -652,8 +846,25 @@ document.addEventListener('DOMContentLoaded', () => {
 
     const fetchOrderableCash = async () => {
         if (!orderAvailableAmount) return;
+        if (!isSessionModeResolved) {
+            setOrderableCashText('\uC870\uD68C \uC911...');
+            try {
+                await waitForSessionMode();
+            } catch (error) {
+                console.warn('Session mode wait failed.', error);
+            }
+        }
+        if (isGuestTradingMode()) {
+            setOrderableCashText('로그인 필요', true);
+            return;
+        }
         if (orderableCashTimer) {
             clearTimeout(orderableCashTimer);
+            orderableCashTimer = null;
+        }
+
+        if (currentOrderAction !== 'buy') {
+            return;
         }
 
         if (!isApiServerAvailable) {
@@ -683,7 +894,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const label = currentOrderAction === 'sell' ? '매도' : currentOrderAction === 'pending' ? '대기' : '매수';
         orderSubmitButton.textContent = `${label} 주문하기`;
         orderSubmitButton.classList.toggle('is-sell', currentOrderAction === 'sell');
-        orderSubmitButton.disabled = currentOrderAction === 'pending';
+        orderSubmitButton.disabled = currentOrderAction === 'pending' || isGuestTradingMode();
     };
 
     const setOrderAction = (action) => {
@@ -696,6 +907,7 @@ document.addEventListener('DOMContentLoaded', () => {
             element.classList.toggle('hidden', isPending);
         });
         orderHoldingRow?.classList.toggle('hidden', isPending || currentOrderAction !== 'sell');
+        orderAvailableAmountRow?.classList.toggle('hidden', isPending || currentOrderAction === 'sell');
         pendingOrdersPanel?.classList.toggle('hidden', !isPending);
         if (isPending) {
             setOrderMessage('');
@@ -708,6 +920,7 @@ document.addEventListener('DOMContentLoaded', () => {
             fetchStockHolding();
         } else {
             resetSellableQuantity();
+            if (currentOrderAction === 'buy') fetchOrderableCash();
         }
         updateOrderSubmitLabel();
     };
@@ -744,9 +957,11 @@ document.addEventListener('DOMContentLoaded', () => {
     };
 
     const changeOrderInputValue = (target, delta) => {
-        const input = target === 'quantity' ? orderQuantityInput : orderPriceInput;
+        const input = target === 'autoQuantity'
+            ? autoTradeQuantityInput
+            : target === 'quantity' ? orderQuantityInput : orderPriceInput;
         if (!input || input.disabled) return;
-        const step = target === 'quantity' ? 1 : getOrderPriceStep();
+        const step = target === 'quantity' || target === 'autoQuantity' ? 1 : getOrderPriceStep();
         let nextValue = Math.max(0, parseOrderNumber(input.value) + (Number(delta) || 0) * step);
         if (target === 'quantity' && currentOrderAction === 'sell' && latestSellableQuantity > 0) {
             nextValue = Math.min(nextValue, latestSellableQuantity);
@@ -759,6 +974,10 @@ document.addEventListener('DOMContentLoaded', () => {
     };
 
     const submitStockOrder = async () => {
+        if (isGuestTradingMode()) {
+            setOrderMessage(LOGIN_REQUIRED_MESSAGE, 'error');
+            return;
+        }
         if (currentOrderAction === 'pending') {
             setOrderMessage('대기 주문은 아직 주문 전송 대상이 아닙니다.', 'error');
             return;
@@ -812,7 +1031,7 @@ document.addEventListener('DOMContentLoaded', () => {
             const orderNo = payload.orderNo ? ` 주문번호 ${payload.orderNo}` : '';
             const doneText = currentOrderAction === 'sell' ? '매도 주문완료' : '매수 주문완료';
             setOrderMessage(`${doneText}${orderNo}`, 'success', { autoHide: 4000 });
-            fetchOrderableCash();
+            if (currentOrderAction === 'buy') fetchOrderableCash();
             if (currentOrderAction === 'sell') fetchStockHolding();
         } catch (error) {
             setOrderMessage(error.message || '주문 전송에 실패했습니다.', 'error');
@@ -862,6 +1081,16 @@ document.addEventListener('DOMContentLoaded', () => {
         updateOrderTotal();
     });
 
+    autoTradeQuantityInput?.addEventListener('input', () => {
+        sanitizeOrderNumberInput(autoTradeQuantityInput);
+    });
+
+    autoTradeQuantityInput?.addEventListener('beforeinput', allowOnlyOrderDigits);
+
+    autoTradeQuantityInput?.addEventListener('blur', () => {
+        formatOrderInputValue(autoTradeQuantityInput);
+    });
+
     pendingOrdersList?.addEventListener('beforeinput', (event) => {
         if (event.target.matches('[data-pending-price], [data-pending-quantity]')) {
             allowOnlyOrderDigits(event);
@@ -879,6 +1108,10 @@ document.addEventListener('DOMContentLoaded', () => {
     }, true);
 
     pendingOrdersList?.addEventListener('click', async (event) => {
+        if (isGuestTradingMode()) {
+            setOrderMessage(LOGIN_REQUIRED_MESSAGE, 'error');
+            return;
+        }
         const stepButton = event.target.closest('[data-pending-step-target]');
         if (stepButton) {
             const card = stepButton.closest('.pending-order-card');
@@ -971,6 +1204,45 @@ document.addEventListener('DOMContentLoaded', () => {
         submitStockOrder();
     });
 
+    orderModeButtons.forEach((button) => {
+        button.addEventListener('click', () => {
+            setOrderMode(button.dataset.orderMode);
+        });
+    });
+
+    autoTradeForm?.addEventListener('submit', (event) => {
+        event.preventDefault();
+        submitAutoTradeRule();
+    });
+    autoTradePriceRangeCheckbox?.addEventListener('change', updateAutoTradeSubmitState);
+    autoTradeSignalGuardCheckbox?.addEventListener('change', updateAutoTradeSubmitState);
+    autoTradeTelegramVerifyButton?.addEventListener('click', verifyTelegramConnection);
+    autoTradeTelegramConfirmButton?.addEventListener('click', confirmTelegramConnection);
+    autoTradeTelegramCodeInput?.addEventListener('input', () => {
+        autoTradeTelegramCodeInput.value = autoTradeTelegramCodeInput.value.replace(/[^\d]/g, '').slice(0, 6);
+    });
+    autoTradeTelegramCodeInput?.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter') {
+            event.preventDefault();
+            confirmTelegramConnection();
+        }
+    });
+    telegramHelpButton?.addEventListener('click', openTelegramHelp);
+    telegramHelpCloseButton?.addEventListener('click', closeTelegramHelp);
+    telegramHelpModal?.addEventListener('click', (event) => {
+        if (event.target === telegramHelpModal) {
+            closeTelegramHelp();
+        }
+    });
+    document.addEventListener('keydown', (event) => {
+        if (event.key === 'Escape' && telegramHelpModal && !telegramHelpModal.classList.contains('hidden')) {
+            closeTelegramHelp();
+        }
+        if (event.key === 'Escape' && indicatorHelpModal && !indicatorHelpModal.classList.contains('hidden')) {
+            closeIndicatorHelp();
+        }
+    });
+
     const getIndicatorFieldValue = (indicator, field) => {
         const values = normalizeIndicatorValues(indicator.key, indicator.values);
         return values[field.key] ?? field.value;
@@ -1059,8 +1331,6 @@ document.addEventListener('DOMContentLoaded', () => {
         return String(strategyNameInput?.value || '').trim();
     };
 
-    const normalizeStrategyName = (value) => String(value || '').replace(/\s+/g, '').toLowerCase();
-
     const isDuplicateStrategyName = (name, currentId = '') => {
         const normalized = normalizeStrategyName(name);
         return savedIndicatorStrategies.some((strategy) => {
@@ -1080,17 +1350,22 @@ document.addEventListener('DOMContentLoaded', () => {
     };
 
     const hideIndicatorDropdown = () => {
+        activeIndicatorSearchIndex = -1;
         indicatorSearchDropdown?.classList.add('hidden');
+        indicatorSearchInput?.setAttribute('aria-expanded', 'false');
     };
 
     const renderIndicatorDropdown = () => {
         if (!indicatorSearchDropdown) return;
 
         const matches = getMatchingIndicatorDefinitions(indicatorSearchInput?.value);
+        activeIndicatorSearchIndex = matches.length ? 0 : -1;
         indicatorSearchDropdown.innerHTML = matches.length
-            ? matches.map((definition) => {
+            ? matches.map((definition, index) => {
+                const activeClass = index === activeIndicatorSearchIndex ? ' is-active' : '';
+                const selected = index === activeIndicatorSearchIndex ? 'true' : 'false';
                 return `
-                    <button type="button" class="indicator-search-option" data-indicator-key="${definition.key}">
+                    <button type="button" class="indicator-search-option${activeClass}" data-indicator-key="${definition.key}" aria-selected="${selected}">
                         <strong>${definition.name}</strong>
                         <span>${definition.description}</span>
                     </button>
@@ -1099,6 +1374,271 @@ document.addEventListener('DOMContentLoaded', () => {
             : '<div class="indicator-empty">추가할 보조지표가 없습니다.</div>';
 
         indicatorSearchDropdown.classList.remove('hidden');
+        indicatorSearchInput?.setAttribute('aria-expanded', 'true');
+    };
+
+    const getIndicatorSearchOptions = () => {
+        return Array.from(indicatorSearchDropdown?.querySelectorAll('[data-indicator-key]') || []);
+    };
+
+    const updateActiveIndicatorSearchOption = () => {
+        const options = getIndicatorSearchOptions();
+        options.forEach((option, index) => {
+            const isActive = index === activeIndicatorSearchIndex;
+            option.classList.toggle('is-active', isActive);
+            option.setAttribute('aria-selected', String(isActive));
+            if (isActive) {
+                option.scrollIntoView({ block: 'nearest' });
+            }
+        });
+    };
+
+    const renderAutoTradeStrategyOptions = () => {
+        if (!autoTradeStrategySelect) return;
+        autoTradeStrategySelect.innerHTML = '<option value="">전략 선택</option>';
+        savedIndicatorStrategies.forEach((strategy) => {
+            const option = document.createElement('option');
+            option.value = strategy.id;
+            option.textContent = strategy.name;
+            autoTradeStrategySelect.appendChild(option);
+        });
+    };
+
+    const fetchAutoTradeCash = async () => {
+        if (!autoTradeCashInput) return;
+        if (isGuestTradingMode()) {
+            autoTradeCashInput.value = '로그인 필요';
+            return;
+        }
+        autoTradeCashInput.value = '조회 중...';
+        try {
+            const response = await authFetch('/api/account/orderable-cash', { cache: 'no-store' });
+            const payload = await response.json().catch(() => ({}));
+            if (!response.ok) throw new Error(payload.message || `HTTP ${response.status}`);
+            autoTradeCashInput.value = `${formatNumber(Number(payload.orderableAmount) || 0)}원`;
+        } catch (error) {
+            console.error('Auto trade cash request failed.', error);
+            autoTradeCashInput.value = '계좌 조회 실패';
+        }
+    };
+
+    const fetchIntegrationStatus = async () => {
+        if (!autoTradeTelegramStatus) return;
+        const setTelegramStatusText = (message) => {
+            if (autoTradeTelegramStatusText) {
+                autoTradeTelegramStatusText.textContent = message;
+            } else {
+                autoTradeTelegramStatus.textContent = message;
+            }
+        };
+        const setTelegramStatusClass = (status) => {
+            autoTradeTelegramStatus.classList.toggle('is-error', status === 'missing');
+            autoTradeTelegramStatus.classList.toggle('is-warning', status === 'needs-verification');
+            autoTradeTelegramVerifyButton?.classList.toggle('hidden', status !== 'needs-verification');
+            autoTradeTelegramCodeRow?.classList.add('hidden');
+        };
+
+        if (isGuestTradingMode()) {
+            isTelegramConfigured = false;
+            setTelegramStatusText('로그인 후 텔레그램 연동을 사용할 수 있습니다.');
+            setTelegramStatusClass('missing');
+            return;
+        }
+
+        setTelegramStatusText('텔레그램 연동 상태를 확인 중입니다.');
+        setTelegramStatusClass('missing');
+        try {
+            const response = await authFetch('/api/integration-status', { cache: 'no-store' });
+            const payload = await response.json().catch(() => ({}));
+            if (!response.ok) throw new Error(payload.message || `HTTP ${response.status}`);
+            const isConfigured = Boolean(payload.telegramConfigured);
+            const isVerified = Boolean(payload.telegramVerified);
+            isTelegramConfigured = isConfigured && isVerified;
+            if (!isConfigured) {
+                setTelegramStatusText('텔레그램 봇 토큰과 Chat ID가 필요합니다. 회원정보수정에서 입력하세요.');
+                setTelegramStatusClass('missing');
+            } else if (!isVerified) {
+                setTelegramStatusText('텔레그램 인증 필요');
+                setTelegramStatusClass('needs-verification');
+            } else {
+                setTelegramStatusText('텔레그램 연동 완료');
+                setTelegramStatusClass('verified');
+            }
+        } catch (error) {
+            console.error('Integration status request failed.', error);
+            isTelegramConfigured = false;
+            setTelegramStatusText('연동 상태를 확인하지 못했습니다.');
+            setTelegramStatusClass('missing');
+        }
+    };
+
+    async function verifyTelegramConnection() {
+        if (!autoTradeTelegramVerifyButton) return;
+        if (isGuestTradingMode()) {
+            setAutoTradeMessage(LOGIN_REQUIRED_MESSAGE, 'error');
+            return;
+        }
+        autoTradeTelegramVerifyButton.disabled = true;
+        autoTradeTelegramVerifyButton.textContent = '인증 중';
+        setAutoTradeMessage('텔레그램 인증코드를 보내는 중입니다...');
+        try {
+            const response = await authFetch('/api/telegram/test', {
+                method: 'POST',
+                cache: 'no-store',
+            });
+            const payload = await response.json().catch(() => ({}));
+            if (!response.ok) throw new Error(payload.message || `HTTP ${response.status}`);
+            autoTradeTelegramCodeRow?.classList.remove('hidden');
+            autoTradeTelegramCodeInput.value = '';
+            autoTradeTelegramCodeInput?.focus();
+            setAutoTradeMessage('텔레그램으로 받은 6자리 인증코드를 입력하세요.', 'success');
+        } catch (error) {
+            setAutoTradeMessage(error.message || '텔레그램 인증코드 발송에 실패했습니다.', 'error');
+        } finally {
+            autoTradeTelegramVerifyButton.disabled = false;
+            autoTradeTelegramVerifyButton.textContent = '인증하기';
+        }
+    }
+
+    async function confirmTelegramConnection() {
+        if (!autoTradeTelegramConfirmButton) return;
+        if (isGuestTradingMode()) {
+            setAutoTradeMessage(LOGIN_REQUIRED_MESSAGE, 'error');
+            return;
+        }
+        const code = String(autoTradeTelegramCodeInput?.value || '').replace(/[^\d]/g, '');
+        if (!/^\d{6}$/.test(code)) {
+            setAutoTradeMessage('6자리 인증코드를 입력하세요.', 'error');
+            return;
+        }
+
+        autoTradeTelegramConfirmButton.disabled = true;
+        setAutoTradeMessage('텔레그램 인증코드를 확인하는 중입니다...');
+        try {
+            const response = await authFetch('/api/telegram/verification/confirm', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json; charset=utf-8' },
+                body: JSON.stringify({ code }),
+            });
+            const payload = await response.json().catch(() => ({}));
+            if (!response.ok) throw new Error(payload.message || `HTTP ${response.status}`);
+            autoTradeTelegramCodeRow?.classList.add('hidden');
+            setAutoTradeMessage('텔레그램 인증이 완료되었습니다.', 'success');
+            await fetchIntegrationStatus();
+        } catch (error) {
+            setAutoTradeMessage(error.message || '텔레그램 인증에 실패했습니다.', 'error');
+        } finally {
+            autoTradeTelegramConfirmButton.disabled = false;
+        }
+    }
+
+    const loadAutoTradePanel = async () => {
+        if (!savedIndicatorStrategies.length) {
+            savedIndicatorStrategies = await loadSavedIndicatorStrategies();
+            renderSavedStrategyOptions();
+        }
+        renderAutoTradeStrategyOptions();
+        fetchAutoTradeCash();
+        fetchIntegrationStatus();
+        updateAutoTradeSubmitState();
+    };
+
+    const submitAutoTradeRule = async () => {
+        if (isGuestTradingMode()) {
+            setAutoTradeMessage(LOGIN_REQUIRED_MESSAGE, 'error');
+            return;
+        }
+        if (!currentStockCode) {
+            setAutoTradeMessage('먼저 종목을 검색해서 선택하세요.', 'error');
+            return;
+        }
+        if (!isTelegramConfigured) {
+            setAutoTradeMessage('텔레그램 봇 토큰과 Chat ID를 먼저 저장하세요.', 'error');
+            return;
+        }
+
+        const strategyId = autoTradeStrategySelect?.value || '';
+        const payload = buildAutoTradeRulePayload({
+            currentStockCode,
+            stockName: stockEls.name?.textContent || '',
+            strategyId,
+            maxBuyPrice: parseOrderNumber(autoTradeMaxPriceInput?.value),
+            minBuyPrice: parseOrderNumber(autoTradeMinPriceInput?.value),
+            orderQuantity: parseOrderNumber(autoTradeQuantityInput?.value),
+            priceRangeAgreed: Boolean(autoTradePriceRangeCheckbox?.checked),
+            signalGuardAgreed: Boolean(autoTradeSignalGuardCheckbox?.checked),
+        });
+
+        autoTradeSubmitButton.disabled = true;
+        setAutoTradeMessage('자동매매 설정을 저장하는 중입니다...');
+        try {
+            const response = await authFetch('/api/auto-trade-rules', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json; charset=utf-8' },
+                body: JSON.stringify(payload),
+            });
+            const result = await response.json().catch(() => ({}));
+            if (!response.ok) throw new Error(result.message || `HTTP ${response.status}`);
+            setAutoTradeMessage('자동매매 설정을 저장했습니다. 서버가 켜져 있는 동안 조건을 감시합니다.', 'success');
+        } catch (error) {
+            setAutoTradeMessage(error.message || '자동매매 설정 저장에 실패했습니다.', 'error');
+        } finally {
+            updateAutoTradeSubmitState();
+        }
+    };
+
+    const moveActiveIndicatorSearchOption = (direction) => {
+        const options = getIndicatorSearchOptions();
+        if (!options.length) return;
+        activeIndicatorSearchIndex = activeIndicatorSearchIndex < 0 ? 0 : activeIndicatorSearchIndex;
+        activeIndicatorSearchIndex = (activeIndicatorSearchIndex + direction + options.length) % options.length;
+        updateActiveIndicatorSearchOption();
+    };
+
+    const addActiveIndicatorSearchOption = () => {
+        const options = getIndicatorSearchOptions();
+        const option = options[activeIndicatorSearchIndex];
+        if (!option) {
+            addIndicatorByQuery();
+            return;
+        }
+        addIndicatorByKey(option.dataset.indicatorKey);
+    };
+
+    const isIndicatorDropdownOpen = () => {
+        return Boolean(indicatorSearchDropdown && !indicatorSearchDropdown.classList.contains('hidden'));
+    };
+
+    const handleIndicatorSearchNavigationKey = (event) => {
+        if (event.key === 'ArrowDown') {
+            event.preventDefault();
+            if (!isIndicatorDropdownOpen() || !getIndicatorSearchOptions().length) {
+                renderIndicatorDropdown();
+            }
+            moveActiveIndicatorSearchOption(1);
+            return true;
+        }
+
+        if (event.key === 'ArrowUp') {
+            event.preventDefault();
+            if (!isIndicatorDropdownOpen() || !getIndicatorSearchOptions().length) {
+                renderIndicatorDropdown();
+            }
+            moveActiveIndicatorSearchOption(-1);
+            return true;
+        }
+
+        if (event.key === 'Enter') {
+            event.preventDefault();
+            addActiveIndicatorSearchOption();
+            return true;
+        }
+
+        return false;
+    };
+
+    const shouldHandleIndicatorSearchNavigation = () => {
+        return document.activeElement === indicatorSearchInput || isIndicatorDropdownOpen();
     };
 
     const findIndicatorDefinition = (query) => {
@@ -1162,7 +1702,12 @@ document.addEventListener('DOMContentLoaded', () => {
                     <div class="indicator-card" data-indicator-id="${indicator.id}">
                         <div class="indicator-card-header">
                             <div>
-                                <div class="indicator-card-title">${definition.name}</div>
+                                <div class="indicator-card-title-row">
+                                    <div class="indicator-card-title">${definition.name}</div>
+                                    <button type="button" class="indicator-help-button" data-indicator-help="${escapeHtml(definition.key)}" aria-label="${escapeHtml(definition.name)} 설명 보기" title="설명 보기">
+                                        <i class="fa-solid fa-circle-info" aria-hidden="true"></i>
+                                    </button>
+                                </div>
                                 <div class="indicator-card-desc">${definition.description}</div>
                             </div>
                             <button type="button" class="indicator-remove-button" data-remove-indicator="${indicator.id}" title="보조지표 삭제">x</button>
@@ -1247,10 +1792,16 @@ document.addEventListener('DOMContentLoaded', () => {
         indicatorAddButton?.addEventListener('click', addIndicatorByQuery);
         indicatorSearchInput?.addEventListener('focus', renderIndicatorDropdown);
         indicatorSearchInput?.addEventListener('input', renderIndicatorDropdown);
+        document.addEventListener('keydown', (event) => {
+            if (!shouldHandleIndicatorSearchNavigation()) return;
+            if (handleIndicatorSearchNavigationKey(event)) {
+                event.indicatorSearchHandled = true;
+                event.stopPropagation();
+            }
+        }, true);
         indicatorSearchInput?.addEventListener('keydown', (event) => {
-            if (event.key !== 'Enter') return;
-            event.preventDefault();
-            addIndicatorByQuery();
+            if (event.indicatorSearchHandled) return;
+            handleIndicatorSearchNavigationKey(event);
         });
 
         indicatorSearchDropdown?.addEventListener('mousedown', (event) => {
@@ -1260,6 +1811,14 @@ document.addEventListener('DOMContentLoaded', () => {
             addIndicatorByKey(option.dataset.indicatorKey);
         });
 
+        indicatorSearchDropdown?.addEventListener('mouseover', (event) => {
+            const option = event.target.closest('[data-indicator-key]');
+            if (!option) return;
+            const options = getIndicatorSearchOptions();
+            activeIndicatorSearchIndex = options.indexOf(option);
+            updateActiveIndicatorSearchOption();
+        });
+
         document.addEventListener('click', (event) => {
             if (!indicatorSearchDropdown || !indicatorSearchInput) return;
             if (indicatorSearchDropdown.contains(event.target) || event.target === indicatorSearchInput) return;
@@ -1267,6 +1826,12 @@ document.addEventListener('DOMContentLoaded', () => {
         });
 
         indicatorCards.addEventListener('click', (event) => {
+            const helpButton = event.target.closest('[data-indicator-help]');
+            if (helpButton) {
+                openIndicatorHelp(helpButton.dataset.indicatorHelp);
+                return;
+            }
+
             const removeButton = event.target.closest('[data-remove-indicator]');
             if (!removeButton) return;
 
@@ -1298,6 +1863,10 @@ document.addEventListener('DOMContentLoaded', () => {
         });
 
         indicatorDeleteButton?.addEventListener('click', () => {
+            if (isGuestTradingMode()) {
+                setStrategyMessage(LOGIN_REQUIRED_MESSAGE);
+                return;
+            }
             const selectedStrategy = getSelectedStrategy();
             if (!selectedStrategy) {
                 setStrategyMessage('삭제할 전략을 선택하세요.');
@@ -1325,6 +1894,10 @@ document.addEventListener('DOMContentLoaded', () => {
         });
 
         indicatorSaveButton?.addEventListener('click', () => {
+            if (isGuestTradingMode()) {
+                setStrategyMessage(LOGIN_REQUIRED_MESSAGE);
+                return;
+            }
             if (!activeIndicators.length) {
                 setStrategyMessage('저장할 보조지표를 먼저 추가하세요.');
                 return;
@@ -1497,7 +2070,7 @@ document.addEventListener('DOMContentLoaded', () => {
         updateMarketSessionStatus();
         if (!isAvailable) {
             setOrderableCashText('계좌 조회 실패', true);
-        } else if (currentOrderAction !== 'pending') {
+        } else if (currentOrderAction === 'buy') {
             fetchOrderableCash();
         }
     };
@@ -1903,7 +2476,10 @@ document.addEventListener('DOMContentLoaded', () => {
                 params.set('years', String(chartHistoryYears));
             }
 
-            const response = await authFetch(`/api/chart/${encodeURIComponent(code)}?${params.toString()}`, {
+            const chartEndpoint = chartDataSource === 'postgres' && isStaticStrategyChart
+                ? '/api/strategy-chart'
+                : '/api/chart';
+            const response = await authFetch(`${chartEndpoint}/${encodeURIComponent(code)}?${params.toString()}`, {
                 cache: 'no-store',
             });
 
@@ -2574,4 +3150,4 @@ document.addEventListener('DOMContentLoaded', () => {
     } else {
         loadDefaultRankingStock();
     }
-});
+}
